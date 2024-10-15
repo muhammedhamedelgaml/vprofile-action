@@ -53,9 +53,9 @@ jobs:
          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
          SONAR_HOST_URL: ${{ secrets.SONAR_URL }}   #OPTIONAL         
 
-          
 
-## BUILD_AND_PUBLISH JOB TO BUILD DOCKER IMAGE AND UPLOAD IT 
+
+## BUILD_AND_PUBLISH JOB TO BUILD DOCKER IMAGE AND UPLOAD IT to ECR
   BUILD_AND_PUBLISH:    
     needs: Testing
     runs-on: ubuntu-latest
@@ -78,3 +78,47 @@ jobs:
             context:  ./           
    
 
+
+## now we have a problem  image is static at /kubernetes/vpro/  , we should be able to pass it regularly in the workflow with the latest tag that we push to ecr using  BUILD_AND_PUBLISH           
+## so the solution is to use helm charts to pass variables when we apply 
+
+  DeployToEKS:    
+    needs: BUILD_AND_PUBLISH
+    runs-on: ubuntu-latest
+    steps:
+     - name: code checkout
+       uses: actions/checkout@v4
+       
+     - name: configure AWS credentials
+       uses: aws-actions/configure-aws-credentials@v4
+       with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region:  ${{env.AWS_REGION}}
+    
+     - name: get kubeconfig file
+       id: kubeconfig     
+       run: aws eks update-kubeconfig  --region ${{env.AWS_REGION}}  --name ${{env.EKS_CLUSTER}}   # this command is going to create kubeconfig file that kubectl command use to access the k8s cluster 
+     
+     - name: print kubeconfig file 
+       run: cat ~/.kube/config
+       
+       
+     ## we need to login to ecr to fetch image 
+      # using kubectl > by create secret of type docker-registry name"regcred" 
+     - name: login ECR
+       run: kubectl create secret docker-registry regcred --docker-server=${{secrets.REGISTRY}} --docker-username=AWS --docker-password=$(aws ecr get-login-password)
+
+       
+     - name: Deploy Helm on EKS
+       uses: bitovi/github-actions-deploy-eks-helm@v1.2.10
+       with:
+         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+         aws-region: ${{env.AWS_REGION}}
+         cluster-name: ${{env.EKS_CLUSTER}}
+        #  config-files: .github/values/dev.yaml
+         chart-path: helm/vprofilecharts
+         namespace: default 
+         values: appimage=${{ secrets.REGISTRY}}/${{env.ECR_REPOSITROY}},apptag=${{github.run_number}}
+         name: vprofile
